@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from langchain_community.document_loaders import YoutubeLoader
 
 app = FastAPI()
 
@@ -22,3 +23,13 @@ class AddRequest(BaseModel):
 @app.post("/add")
 async def add(request: AddRequest):
     return {"result": request.a + request.b}
+
+class GetTranscriptRequest(BaseModel):
+    url: str
+
+@app.post("/get_transcript")
+async def get_transcript(request: GetTranscriptRequest):
+    loader = YoutubeLoader.from_youtube_url(request.url)
+    docs = loader.load()
+    transcript = "\n".join([doc.page_content for doc in docs])
+    return {"transcript": transcript}
