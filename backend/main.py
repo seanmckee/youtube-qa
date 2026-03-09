@@ -19,23 +19,17 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-@app.get("/")
-async def root():
+@app.get("/health")
+async def health():
     return {"message": "working"}
 
-class AddRequest(BaseModel):
-    a: int
-    b: int
 
-@app.post("/add")
-async def add(request: AddRequest):
-    return {"result": request.a + request.b}
 
 class GetTranscriptRequest(BaseModel):
     url: str
@@ -44,20 +38,28 @@ class GetTranscriptRequest(BaseModel):
 async def get_transcript(request: GetTranscriptRequest):
     try:
         loader = YoutubeLoader.from_youtube_url(request.url)
-        docs = loader.load()[0].page_content
+        docs = loader.load()
+        if not docs:
+            raise ValueError("No transcript found for this video")
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=200)
-        texts = text_splitter.split_text(docs)
+        texts = text_splitter.split_text(docs[0].page_content)
         embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
         vector_store = FAISS.from_texts(texts, embeddings)
-        video_id = request.url.split("v=")[1]
-        vector_stores[video_id] = vector_store      
+        video_id = request.url.split("v=")[-1].split("&")[0]
+        vector_stores[video_id] = vector_store
         return {"video_id": video_id}
     except Exception as e:
+        print(f"Error in get_transcript: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
 class ChatRequest(BaseModel):
     video_id: str
     question: str
+    history: list[ChatMessage] = []
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -65,10 +67,15 @@ async def chat(request: ChatRequest):
         vector_store = vector_stores[request.video_id]
         docs = vector_store.similarity_search(request.question, k=4)
         context = "\n\n".join(doc.page_content for doc in docs)
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "Answer based on this transcript context:\n\n{context}"),
-            ("user", "{question}"),
-        ])
+
+        messages = [
+            ("system", "Answer based on this YouTube transcript context. Be concise and helpful.\n\n{context}"),
+        ]
+        for msg in request.history:
+            messages.append((msg.role, msg.content))
+        messages.append(("user", "{question}"))
+
+        prompt = ChatPromptTemplate.from_messages(messages)
         llm = ChatOpenAI(model="gpt-4o-mini")
         chain = prompt | llm | StrOutputParser()
         response = chain.invoke({"context": context, "question": request.question})
